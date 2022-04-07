@@ -1,6 +1,27 @@
 const urlModel = require("../models/urlModel.js")
-
+const redis = require("redis");
 const shortid=require("shortid")
+
+const { promisify } = require("util");
+
+
+const redisClient = redis.createClient(
+    16368,
+    "redis-16368.c15.us-east-1-2.ec2.cloud.redislabs.com",
+    { no_ready_check: true }
+  );
+  redisClient.auth("Y52LH5DG1XbiVCkNC2G65MvOFswvQCRQ", function (err) {
+    if (err) throw err;
+  });
+  
+  redisClient.on("connect", async function () {
+    console.log("Connected to Redis..");
+  });
+  
+const SET_ASYNC = promisify(redisClient.SET).bind(redisClient);
+const GET_ASYNC = promisify(redisClient.GET).bind(redisClient);
+  
+
 
 const createUrl =async function(req,res){
     try{
@@ -15,7 +36,7 @@ const createUrl =async function(req,res){
             
             if(!longUrl)
             return res.status(400).send({status :false, msg:" longUrl is required"})
-            console.log(longUrl)
+            //console.log(longUrl)
             
             const isValidLink =/(ftp|http|https|HTTP|HTTPS|FTP):\/\/(\w+:{0,1}\w*@)?(\S+)(:[0-9]+)?(\/|\/([\w#!:.?+=&%@!\-/]))?/.test(longUrl.trim()) 
              
@@ -26,13 +47,20 @@ const createUrl =async function(req,res){
             
         
         //if valid we create the url code
-        let urlCode=shortid.generate()
+        let urlCode=shortid.generate().toLowerCase()
         //join the generated short code in the base url
         let shortUrl=baseUrl + "/"+ urlCode
 
-         let Url = await urlModel.findOne({ longUrl })
+        let cacheData = await GET_ASYNC(`${longUrl}`)
+        if(cacheData) {
+            console.log('comming from the redis...')
+            let convert  = JSON.parse(cacheData)
+            return res.status(200).send({ status: true, message: "Success", Data: convert })
+        }
+         let Url = await urlModel.findOne({ longUrl }).select({longUrl: 1, shortUrl: 1, urlCode: 1, _id: 0})
          if (Url) {
-        return res.status(200).send({ status: true, data: { longUrl: Url.longUrl, shortUrl: Url.shortUrl, urlCode: Url.urlCode } })
+             await SET_ASYNC(`${longUrl}`, JSON.stringify(Url))
+            return res.status(200).send({ status: true, data: Url})
         }
         let finalobject = { longUrl,shortUrl,urlCode}
 
@@ -49,17 +77,26 @@ const getUrlcode=async function(req,res){
        
         let urlCode=req.params.urlCode
 
-        if(!urlCode){return res.status(400).send({status:false,message:"urlCode Required"})}
-
+        
+        let cacheData = await GET_ASYNC(`${urlCode}`)
+        if(cacheData) {
+            console.log('coming from redis...')
+            let convert = JSON.parse(cacheData)
+            return res.status(302).redirect(convert.longUrl)
+        }
          let findUrlCode=await urlModel.findOne({urlCode})
-         if(!findUrlCode){return res.status(400).send({status:false,message:"urlCode not found"})}
+         console.log('Coming from DB....')
+         await SET_ASYNC(`${urlCode}`, JSON.stringify(findUrlCode))
+         if(!findUrlCode)
+         {return res.status(404).send({status:false,message:"urlCode not found"})}
     
-      return res.status(200).redirect(findUrlCode.longUrl)
+        return res.status(302).redirect(findUrlCode.longUrl)
     }
     catch (error) {
         res.status(500).send({ status: false, message: error.message })
     }
 }
+
 
   
 
